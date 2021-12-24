@@ -76,6 +76,20 @@ const std::string VERSION = std::to_string(OPENMLDB_VERSION_MAJOR) + "." +  // N
 std::string db = "";  // NOLINT
 ::openmldb::sdk::DBSDK* cs = nullptr;
 ::openmldb::sdk::SQLClusterRouter* sr = nullptr;
+using VariableMap = std::map<std::string, std::string>;
+VariableMap session_variables = {VariableMap::value_type("execute_mode", "online")};
+
+bool IsOnlineMode() {
+    auto execute_mode = session_variables["execute_mode"];
+    if (execute_mode == "online") {
+        return true;
+    } else if (execute_mode == "offline") {
+        return false;
+    } else {
+        std::cout << "ERROR: unknown execute mode " << execute_mode << ", use online mode" << std::endl;
+        return true;
+    }
+}
 
 void SaveResultSet(::hybridse::sdk::ResultSet* result_set, const std::string& file_path,
                    const std::shared_ptr<hybridse::node::OptionsMap>& options_map, ::openmldb::base::Status* status) {
@@ -417,6 +431,36 @@ void PrintJobInfos(std::ostream& stream, std::vector<::openmldb::taskmanager::Jo
     stream << job_infos.size() << " jobs in set" << std::endl;
 }
 
+void PrintOfflineTableInfo(std::ostream& stream, const ::openmldb::nameserver::OfflineTableInfo& offline_table_info) {
+    ::hybridse::base::TextTable t('-', ' ', ' ');
+
+    t.add("Offline path");
+    t.add("Format");
+    t.add("Deep copy");
+    t.add("Options");
+    t.end_of_row();
+
+    auto& options = offline_table_info.options();
+    std::string optionStr;
+    bool first = true;
+    for (auto &pair : options) {
+        if (first) {
+            optionStr += pair.first + ":" + pair.second;
+            first = false;
+        } else {
+            optionStr += ", " + pair.first + ":" + pair.second;
+        }
+    }
+
+    t.add(offline_table_info.path());
+    t.add(offline_table_info.format());
+    t.add(offline_table_info.deep_copy() ? "true" : "false");
+    t.add(optionStr);
+    t.end_of_row();
+
+    stream << t << std::endl;
+}
+
 void HandleCmd(const hybridse::node::CmdPlanNode* cmd_node) {
     std::shared_ptr<client::NsClient> ns;
     switch (cmd_node->GetCmdType()) {
@@ -461,6 +505,9 @@ void HandleCmd(const hybridse::node::CmdPlanNode* cmd_node) {
 
             PrintSchema(table->column_desc());
             PrintColumnKey(table->column_key());
+            if(table->has_offline_table_info()) {
+                PrintOfflineTableInfo(std::cout, table->offline_table_info());
+            }
             break;
         }
 
@@ -640,6 +687,18 @@ void HandleCmd(const hybridse::node::CmdPlanNode* cmd_node) {
             } else {
                 std::cout << "ERROR: Failed to drop. error: " << error << std::endl;
             }
+            break;
+        }
+        case hybridse::node::kCmdShowSessionVariables: {
+            std::vector<std::vector<std::string>> items;
+            for (auto& pair : session_variables) {
+                items.push_back({pair.first, pair.second});
+            }
+            PrintItemTable(std::cout, {"Variable_name", "Value"}, items);
+            break;
+        }
+        case hybridse::node::kCmdShowGlobalVariables: {
+            std::cout << "ERROR: global variable is unsupported now" << std::endl;
             break;
         }
         case hybridse::node::kCmdExit: {
@@ -926,9 +985,18 @@ base::Status HandleDeploy(const hybridse::node::DeployPlanNode* deploy_node) {
     return ns->CreateProcedure(sp_info, FLAGS_request_timeout_ms);
 }
 
-void SetVariable(const std::string& key, const hybridse::node::ConstNode* value) {
-    auto lower_key = boost::to_lower_copy(key);
-    printf("ERROR: The variable key %s is not supported\n", key.c_str());
+void HandleSet(hybridse::node::SetPlanNode* node) {
+    if (node->Scope() == hybridse::node::VariableScope::kGlobalSystemVariable) {
+        printf("ERROR: global system variable is unsupported\n");
+        return;
+    }
+    auto it = session_variables.find(node->Key());
+    if (it == session_variables.end()) {
+        printf("ERROR: no session variable %s\n", node->Key().c_str());
+        return;
+    }
+    session_variables[node->Key()] = node->Value()->GetExprString();
+    printf("SUCCEED: OK\n");
 }
 
 template <typename T>
@@ -1196,6 +1264,13 @@ void HandleSQL(const std::string& sql) {
             return;
         }
         case hybridse::node::kPlanTypeInsert: {
+            if (!IsOnlineMode()) {
+                // Not support for inserting into offline storage
+                std::cout << "ERROR: Can not insert in offline mode, please set @@SESSION.execute_mode='online'"
+                          << std::endl;
+                return;
+            }
+
             // TODO(denglong): Should support table name with database name
             if (db.empty()) {
                 std::cout << "ERROR: Please use database first" << std::endl;
@@ -1221,12 +1296,26 @@ void HandleSQL(const std::string& sql) {
         }
         case hybridse::node::kPlanTypeFuncDef:
         case hybridse::node::kPlanTypeQuery: {
-            ::hybridse::sdk::Status status;
-            auto rs = sr->ExecuteSQL(db, sql, &status);
-            if (!rs) {
-                std::cout << "ERROR: " << status.msg << std::endl;
+            if (IsOnlineMode()) {
+                // Run online query
+                ::hybridse::sdk::Status status;
+                auto rs = sr->ExecuteSQL(db, sql, &status);
+                if (!rs) {
+                    std::cout << "ERROR: " << status.msg << std::endl;
+                } else {
+                    PrintResultSet(std::cout, rs.get());
+                }
             } else {
-                PrintResultSet(std::cout, rs.get());
+                // Run offline query
+                ::openmldb::taskmanager::JobInfo job_info;
+                std::map<std::string, std::string> config;
+                auto status = sr->ExecuteOfflineQuery(sql, config, db, job_info);
+
+                std::vector<::openmldb::taskmanager::JobInfo> job_infos;
+                if (status.OK() && job_info.id() > 0) {
+                    job_infos.push_back(job_info);
+                }
+                PrintJobInfos(std::cout, job_infos);
             }
             return;
         }
@@ -1247,16 +1336,38 @@ void HandleSQL(const std::string& sql) {
             return;
         }
         case hybridse::node::kPlanTypeSet: {
-            auto* set_node = dynamic_cast<hybridse::node::SetPlanNode*>(node);
-            SetVariable(set_node->Key(), set_node->Value());
+            HandleSet(dynamic_cast<hybridse::node::SetPlanNode*>(node));
             return;
         }
         case hybridse::node::kPlanTypeLoadData: {
             auto plan = dynamic_cast<hybridse::node::LoadDataPlanNode*>(node);
-            std::string error;
-            if (!HandleLoadDataInfile(plan->Db(), plan->Table(), plan->File(), plan->Options(), &error)) {
-                std::cout << "ERROR: Load data failed. " << error << std::endl;
-                return;
+
+            if (cs->IsClusterMode()) {
+                // Handle in cluster mode
+                ::openmldb::taskmanager::JobInfo job_info;
+                std::map<std::string, std::string> config;
+
+                ::openmldb::base::Status status;
+                if (IsOnlineMode()) {
+                    // Handle in online mode
+                    status = sr->ImportOnlineData(sql, config, db, job_info);
+                } else {
+                    // Handle in offline mode
+                    status = sr->ImportOfflineData(sql, config, db, job_info);
+                }
+
+                std::vector<::openmldb::taskmanager::JobInfo> job_infos;
+                if (status.OK() && job_info.id() > 0) {
+                    job_infos.push_back(job_info);
+                }
+                PrintJobInfos(std::cout, job_infos);
+            } else {
+                // Handle in standalone mode
+                std::string error;
+                if (!HandleLoadDataInfile(plan->Db(), plan->Table(), plan->File(), plan->Options(), &error)) {
+                    std::cout << "ERROR: Load data failed. " << error << std::endl;
+                    return;
+                }
             }
             return;
         }
