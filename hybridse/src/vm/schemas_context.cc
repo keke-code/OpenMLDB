@@ -19,6 +19,8 @@
 #include "passes/physical/physical_pass.h"
 #include "vm/physical_op.h"
 
+DECLARE_bool(enable_spark_unsaferow_format);
+
 namespace hybridse {
 namespace vm {
 
@@ -141,7 +143,10 @@ void SchemasContext::Clear() {
         delete ptr;
     }
     schema_sources_.clear();
-    row_formats_.clear();
+    if (row_format_) {
+        delete row_format_;
+        row_format_ = nullptr;
+    }
     owned_concat_output_schema_.Clear();
 }
 
@@ -206,9 +211,9 @@ Status SchemasContext::ResolveColumnIndexByName(
         // if relation name not specified, resolve in current context only
         auto iter = column_name_map_.find(column_name);
         CHECK_TRUE(iter != column_name_map_.end(), kColumnNotFound,
-                   "Fail to find column `", column_name, "`");
+                   "Fail to find column ", column_name);
         if (iter->second.size() > 1) {
-            CHECK_TRUE(!IsColumnAmbiguous(column_name), kColumnNotFound,
+            CHECK_TRUE(!IsColumnAmbiguous(column_name), common::kColumnAmbiguous,
                        "Ambiguous column name ", column_name);
         }
         auto pair = iter->second[0];
@@ -219,7 +224,7 @@ Status SchemasContext::ResolveColumnIndexByName(
         // fallback logic if this is not a schema context bind to plan node
         auto iter = column_name_map_.find(column_name);
         CHECK_TRUE(iter != column_name_map_.end(), kColumnNotFound,
-                   "Fail to find column `", column_name, "`");
+                   "Fail to find column ", column_name);
         bool found = false;
         size_t cur_column_id = 0;
         size_t cur_col_idx = 0;
@@ -235,7 +240,7 @@ Status SchemasContext::ResolveColumnIndexByName(
                     cur_col_idx = pair.second;
                     cur_schema_idx = pair.first;
                 } else {
-                    CHECK_TRUE(cur_column_id == source->GetColumnID(pair.second), kColumnNotFound,
+                    CHECK_TRUE(cur_column_id == source->GetColumnID(pair.second), common::kColumnAmbiguous,
                                "Ambiguous column name ", db_name, ".", relation_name, ".", column_name);
                 }
             }
@@ -475,8 +480,8 @@ bool SchemasContext::IsColumnAmbiguous(const std::string& column_name) const {
     return column_id_set.size() != 1;
 }
 
-const codec::RowFormat* SchemasContext::GetRowFormat(size_t idx) const {
-    return idx < row_formats_.size() ? &row_formats_[idx] : nullptr;
+const codec::RowFormat* SchemasContext::GetRowFormat() const {
+    return row_format_;
 }
 
 const std::string& SchemasContext::GetName() const {
@@ -510,19 +515,30 @@ const codec::Schema* SchemasContext::GetOutputSchema() const {
 }
 
 bool SchemasContext::CheckBuild() const {
-    return row_formats_.size() == schema_sources_.size();
+    return row_format_ != nullptr;
 }
 
 void SchemasContext::Build() {
     // initialize detailed formats
-    row_formats_.clear();
+    if (row_format_) {
+        delete row_format_;
+        row_format_ = nullptr;
+    }
+    std::vector<const hybridse::codec::Schema*> schemas;
     for (const auto& source : schema_sources_) {
         if (source->GetSchema() == nullptr) {
             LOG(WARNING) << "Source schema is null";
             return;
         }
-        row_formats_.emplace_back(codec::RowFormat(source->GetSchema()));
+        schemas.emplace_back(source->GetSchema());
     }
+
+    if (FLAGS_enable_spark_unsaferow_format) {
+        row_format_ = new codec::SingleSliceRowFormat(schemas);
+    } else {
+        row_format_ = new codec::MultiSlicesRowFormat(schemas);
+    }
+
     // initialize mappings
     column_id_map_.clear();
     column_name_map_.clear();
@@ -576,8 +592,8 @@ Status SchemasContext::ResolveColumnID(
         if (iter != column_name_map_.end()) {
             // exit if find ambiguous match
             if (iter->second.size() > 1) {
-                CHECK_TRUE(!IsColumnAmbiguous(column_name), kColumnNotFound,
-                           "Ambiguous column name ", relation_name, ".",
+                CHECK_TRUE(!IsColumnAmbiguous(column_name), common::kColumnAmbiguous,
+                           "Ambiguous column name ", db_name, ".", relation_name, ".",
                            column_name);
             }
 
@@ -635,7 +651,11 @@ Status SchemasContext::ResolveColumnID(
             relation_name, column_name, &cur_child_column_id,
             &sub_child_path_idx, &sub_child_column_id, &sub_source_column_id,
             &sub_source_node);
+
         if (!status.isOK()) {
+            if (common::kColumnAmbiguous == status.code) {
+                CHECK_STATUS(status);
+            }
             continue;
         }
 
@@ -660,7 +680,7 @@ Status SchemasContext::ResolveColumnID(
 
         // check if candidate is ambiguous
         if (found) {
-            CHECK_TRUE(*column_id == cand_column_id, kColumnNotFound,
+            CHECK_TRUE(*column_id == cand_column_id, common::kColumnAmbiguous,
                        "Ambiguous column ", db_name, ".", relation_name, ".", column_name,
                        ": #", *column_id, " and #", cand_column_id);
         } else {
@@ -707,6 +727,87 @@ void SchemasContext::BuildTrivial(
         }
     }
     this->Build();
+}
+
+RowParser::RowParser(const SchemasContext* schema_ctx) : schema_ctx_(schema_ctx) {
+    for (size_t i = 0; i < schema_ctx_->GetSchemaSourceSize(); ++i) {
+        auto source = schema_ctx_->GetSchemaSource(i);
+        row_view_list_.push_back(codec::RowView(*source->GetSchema()));
+    }
+}
+
+bool RowParser::IsNull(const Row& row, const node::ColumnRefNode& col) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnRefIndex(&col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    return row_view.IsNULL(row.buf(schema_idx), col_idx);
+}
+
+bool RowParser::IsNull(const Row& row, const std::string& col) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnIndexByName("", "", col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    return row_view.IsNULL(row.buf(schema_idx), col_idx);
+}
+
+int32_t RowParser::GetValue(const Row& row, const node::ColumnRefNode& col, ::hybridse::type::Type type,
+                            void* val) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnRefIndex(&col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    return row_view.GetValue(row.buf(schema_idx), col_idx, type, val);
+}
+
+int32_t RowParser::GetValue(const Row& row, const node::ColumnRefNode& col, void* val) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnRefIndex(&col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    auto& col_def = row_view.GetSchema()->Get(col_idx);
+    return row_view.GetValue(row.buf(schema_idx), col_idx, col_def.type(), val);
+}
+
+int32_t RowParser::GetValue(const Row& row, const std::string& col, ::hybridse::type::Type type, void* val) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnIndexByName("", "", col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    return row_view.GetValue(row.buf(schema_idx), col_idx, type, val);
+}
+
+int32_t RowParser::GetValue(const Row& row, const std::string& col, void* val) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnIndexByName("", "", col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    auto& col_def = row_view.GetSchema()->Get(col_idx);
+    return row_view.GetValue(row.buf(schema_idx), col_idx, col_def.type(), val);
+}
+
+int32_t RowParser::GetString(const Row& row, const std::string& col, std::string* val) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnIndexByName("", "", col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    const char* ch = nullptr;
+    uint32_t str_size;
+    row_view.GetValue(row.buf(schema_idx), col_idx, &ch, &str_size);
+
+    std::string tmp(ch, str_size);
+    val->swap(tmp);
+    return 0;
+}
+
+type::Type RowParser::GetType(const std::string& col) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnIndexByName("", "", col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    auto& col_def = row_view.GetSchema()->Get(col_idx);
+    return col_def.type();
+}
+
+type::Type RowParser::GetType(const node::ColumnRefNode& col) const {
+    size_t schema_idx, col_idx;
+    schema_ctx_->ResolveColumnRefIndex(&col, &schema_idx, &col_idx);
+    const codec::RowView& row_view = row_view_list_[schema_idx];
+    auto& col_def = row_view.GetSchema()->Get(col_idx);
+    return col_def.type();
 }
 
 }  // namespace vm

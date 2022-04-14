@@ -16,7 +16,6 @@
 
 package com._4paradigm.openmldb.batch
 
-import com._4paradigm.hybridse.HybridSeLibrary
 import com._4paradigm.hybridse.`type`.TypeOuterClass.Database
 import com._4paradigm.hybridse.node.JoinType
 import com._4paradigm.hybridse.sdk.{SqlEngine, UnsupportedHybridSeException}
@@ -34,8 +33,8 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.slf4j.LoggerFactory
 
-import scala.collection.mutable
 import scala.collection.JavaConversions.seqAsJavaList
+import scala.collection.mutable
 
 class SparkPlanner(session: SparkSession, config: OpenmldbBatchConfig, sparkAppName: String) {
 
@@ -83,9 +82,9 @@ class SparkPlanner(session: SparkSession, config: OpenmldbBatchConfig, sparkAppN
       planCtx.setModuleBuffer(irBuffer)
 
       val root = engine.getPlan
-      logger.info("Get HybridSE physical plan: ")
 
       if (config.printPhysicalPlan) {
+        logger.info("Get HybridSE physical plan: ")
         root.Print()
       }
 
@@ -273,9 +272,12 @@ class SparkPlanner(session: SparkSession, config: OpenmldbBatchConfig, sparkAppN
     // Set the output to context cache
     ctx.putPlanResult(root.GetNodeId(), outputSpatkInstance)
 
+    if (config.debugShowNodeDf) {
+      logger.warn(s"Debug and print DataFrame of nodeId: ${root.GetNodeId()}, nodeType: ${root.GetTypeName()}")
+      outputSpatkInstance.getDf().show()
+    }
     outputSpatkInstance
   }
-
 
   /**
    * Run plan slowly by storing and loading each intermediate result from external data path.

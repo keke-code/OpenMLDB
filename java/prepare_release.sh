@@ -29,7 +29,9 @@
 #  - string literal 'main': it is treated as a push to main, take version number from openmldb-parent
 #
 # Environment variables:
-# - IS_MAC_VARIANT: if setted, hybridse-native & openmldb-native will set to macos variant
+# - VARIANT_TYPE:
+#   1. 'macos': hybridse-native & openmldb-native will set to macos variant
+#   2. 'allinone': hybridse-native & openmldb-native will set to allinone variant
 #
 # in case the version number passed in (extracted from tag) is in wrong style, the script will
 # replace any string after 'x.x.x' with '-SNAPSHOT', to avoid publish directly into maven central
@@ -47,18 +49,22 @@ fi
 
 cd "$(dirname "$0")"
 
+ROOT=$(pwd)
+
+MAVEN_EXE=${ROOT}/mvnw
+
 if [[ -n $CI ]]; then
   MAVEN_FLAGS='--batch-mode'
 fi
 
-IS_MAC_VARIANT=${IS_MAC_VARIANT:-}
+VARIANT_TYPE=${VARIANT_TYPE:-}
 
 VERSION=$1
 
 if [[ $VERSION = 'main' ]]; then
   echo -e "${GREEN}not release from a tag push, $0 will get versions from code${NC}"
   # get version number from code
-  VERSION=$(mvn $MAVEN_FLAGS help:evaluate -Dexpression=project.version -q -DforceStdout)
+  VERSION=$($MAVEN_EXE $MAVEN_FLAGS help:evaluate -Dexpression=project.version -q -DforceStdout)
 fi
 # rm semVer number from VERSION of 3 numbers MAJOR.MINOR.PATCH
 #  0.1.2 -> ''
@@ -96,15 +102,17 @@ echo "BASE_VERSION: ${BASE_VERSION}, DEBUG_NO: ${DEBUG_NO}, SUFFIX_VERSION: ${SU
 
 JAVA_VERSION="$BASE_VERSION${DEBUG_NO}$SUFFIX_VERSION"
 
-if [[ -z $IS_MAC_VARIANT ]]; then
-  VARIANT_VERSION="$BASE_VERSION${DEBUG_NO}$SUFFIX_VERSION"
-else
+if [[ $VARIANT_TYPE = 'macos' ]]; then
   VARIANT_VERSION="$BASE_VERSION${DEBUG_NO}-macos$SUFFIX_VERSION"
+elif [[ $VARIANT_TYPE = 'allinone' ]]; then
+  VARIANT_VERSION="$BASE_VERSION${DEBUG_NO}-allinone$SUFFIX_VERSION"
+else
+  VARIANT_VERSION="$BASE_VERSION${DEBUG_NO}$SUFFIX_VERSION"
 fi
 
 echo -e "${GREEN}setting project version to: $JAVA_VERSION, setting hybridse-native & openmldb-native to $VARIANT_VERSION${NC}"
 
-mvn $MAVEN_FLAGS versions:set -DnewVersion="$JAVA_VERSION"
+$MAVEN_EXE $MAVEN_FLAGS versions:set -DnewVersion="$JAVA_VERSION"
 
 # those module has macOS variant so do not inherit number from openmldb-parent
-mvn $MAVEN_FLAGS versions:set-property -Dproperty="variant.native.version" -DnewVersion="$VARIANT_VERSION"
+$MAVEN_EXE $MAVEN_FLAGS versions:set-property -Dproperty="variant.native.version" -DnewVersion="$VARIANT_VERSION"

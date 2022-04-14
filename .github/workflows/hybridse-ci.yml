@@ -4,22 +4,30 @@ on:
   push:
     branches:
       - main
+    paths:
+      - .github/workflows/hybridse-ci.yml
+      - 'cases/**'
+      - 'hybridse/**'
+      - 'include/**'
   pull_request:
     paths:
       - .github/workflows/hybridse-ci.yml
-      - cases/**/*
-      - hybridse/**/*
+      - 'cases/**'
+      - 'hybridse/**'
+      - 'include/**'
   workflow_dispatch:
 
 env:
   HYBRIDSE_PATH: hybridse
+  CTEST_PARALLEL_LEVEL: 2 # parallel test level for ctest (make test)
+  CTEST_OUTPUT_ON_FAILURE: ON
   NPROC: 2 # default Parallel build number for GitHub's Linux runner
 
 jobs:
   linux-build:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/4paradigm/hybridsql:0.4.1
+      image: ghcr.io/4paradigm/hybridsql:0.5
     env:
       OS: linux
       ARCH: x86_64
@@ -51,12 +59,21 @@ jobs:
       OS: darwin
       ARCH: x86_64
       NPROC: 3
+      CTEST_PARALLEL_LEVEL: 3 # parallel test level for ctest (make test)
     steps:
       - uses: actions/checkout@v2
 
       - name: Install dependencies
         run: |
           brew install coreutils
+
+      - name: Cache thirdparty
+        uses: actions/cache@v2
+        with:
+          path: |
+            .deps/
+            thirdsrc
+          key: ${{ runner.os }}-thirdparty-${{ hashFiles('third-party/**/CMakeLists.txt', 'third-party/**/*.cmake', 'third-party/**/*.sh') }}
 
       - name: Build Core
         run: |

@@ -83,6 +83,8 @@ enum StatusCode {
     kCodegenEncodeError = 1108;
     // error when generate code to decode a row
     kCodegenDecodeError = 1109;
+    // error when register external udf function
+    kExternalUDFError = 1110;
 
     // error with catalog
     kCatalogError = 1200;
@@ -102,6 +104,8 @@ enum StatusCode {
     kTableExists = 1207;
     // error with catalog, column already exist in the given table
     kColumnExists = 1208;
+    // error with column resolve with ambiguous columns
+    kColumnAmbiguous= 1209;
 
     kCodecError = 1300;
     kSchemaCodecError = 1301;
@@ -137,6 +141,8 @@ enum StatusCode {
     kTestEngineError = 1801;
     kSqlCaseError = 1802;
     kTestRunSessionError = 1803;
+
+    kCmdError = 2000;
 }
 
 message Status {

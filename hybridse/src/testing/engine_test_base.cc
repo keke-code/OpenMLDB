@@ -505,6 +505,8 @@ void EngineTestRunner::RunBenchmark(size_t iters) {
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(EngineTest);
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(BatchRequestEngineTest);
 
+INSTANTIATE_TEST_SUITE_P(EngineTestBug, EngineTest,
+                         testing::ValuesIn(sqlcase::InitCases("/cases/debug/bug.yaml")));
 INSTANTIATE_TEST_SUITE_P(EngineFailQuery, EngineTest,
                         testing::ValuesIn(sqlcase::InitCases("/cases/query/fail_query.yaml")));
 
@@ -645,6 +647,10 @@ INSTANTIATE_TEST_SUITE_P(EngineTestSparkJD, EngineTest,
 // 多表-信用卡用户转借记卡预测场景
 INSTANTIATE_TEST_SUITE_P(EngineTestSparkCredit, EngineTest,
                         testing::ValuesIn(sqlcase::InitCases("/cases/function/spark/test_credit.yaml")));
+
+// AUTOX
+INSTANTIATE_TEST_SUITE_P(EngineTestAutoXSQLFunction, EngineTest,
+                         testing::ValuesIn(sqlcase::InitCases("/cases/usecase/autox.yaml")));
 
 INSTANTIATE_TEST_SUITE_P(BatchRequestEngineTest, BatchRequestEngineTest,
                         testing::ValuesIn(sqlcase::InitCases("/cases/function/test_batch_request.yaml")));

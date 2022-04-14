@@ -70,11 +70,9 @@ DECLARE_int32(get_concurrency_limit);
 DEFINE_string(role, "",
               "Set the openmldb role for start: tablet | nameserver | client | ns_client | sql_client | apiserver");
 DEFINE_string(cmd, "", "Set the command");
-DEFINE_bool(interactive, true, "Set the interactive");
+DECLARE_bool(interactive);
 
 DECLARE_string(openmldb_log_dir);
-DEFINE_int32(log_file_size, 1024, "Config the log size in MB");
-DEFINE_int32(log_file_count, 24, "Config the log count");
 DEFINE_string(log_level, "debug", "Set the log level, eg: debug or info");
 DECLARE_uint32(latest_ttl_max);
 DECLARE_uint32(absolute_ttl_max);
@@ -268,12 +266,7 @@ void StartTablet() {
         PDLOG(WARNING, "Fail to start server");
         exit(1);
     }
-#ifdef PZFPGA_ENABLE
-    PDLOG(INFO, "start tablet on endpoint %s with version %s with fpga",
-          real_endpoint.c_str(), OPENMLDB_VERSION.c_str());
-#else
     PDLOG(INFO, "start tablet on endpoint %s with version %s", real_endpoint.c_str(), OPENMLDB_VERSION.c_str());
-#endif
     if (!tablet->RegisterZK()) {
         PDLOG(WARNING, "Fail to register zk");
         exit(1);
@@ -284,7 +277,7 @@ void StartTablet() {
 #endif
 
 int PutData(uint32_t tid, const std::map<uint32_t, std::vector<std::pair<std::string, uint32_t>>>& dimensions,
-            const std::vector<uint64_t>& ts_dimensions, uint64_t ts, const std::string& value,
+            uint64_t ts, const std::string& value,
             const google::protobuf::RepeatedPtrField<::openmldb::nameserver::TablePartition>& table_partition,
             uint32_t format_version) {
     std::map<std::string, std::shared_ptr<::openmldb::client::TabletClient>> clients;
@@ -323,16 +316,10 @@ int PutData(uint32_t tid, const std::map<uint32_t, std::vector<std::pair<std::st
                 return -1;
             }
         }
-        if (ts_dimensions.empty()) {
-            if (!clients[endpoint]->Put(tid, pid, ts, value, iter->second, format_version)) {
-                printf("put failed. tid %u pid %u endpoint %s ts %lu \n", tid, pid, endpoint.c_str(), ts);
-                return -1;
-            }
-        } else {
-            if (!clients[endpoint]->Put(tid, pid, iter->second, ts_dimensions, value, format_version)) {
-                printf("put failed. tid %u pid %u endpoint %s ts_dimensions\n", tid, pid, endpoint.c_str());
-                return -1;
-            }
+
+        if (!clients[endpoint]->Put(tid, pid, ts, value, iter->second, format_version)) {
+            printf("put failed. tid %u pid %u endpoint %s ts %lu \n", tid, pid, endpoint.c_str(), ts);
+            return -1;
         }
     }
     std::cout << "Put ok" << std::endl;
@@ -367,7 +354,7 @@ int PutData(uint32_t tid, const std::map<uint32_t, std::vector<std::pair<std::st
     if (codec.EncodeRow(input_value, &value) < 0) {
         return ::openmldb::base::Status(-1, "Encode data error");
     }
-    std::vector<uint64_t> ts_dimensions;
+
     if (table_info.compress_type() == ::openmldb::type::CompressType::kSnappy) {
         std::string compressed;
         ::snappy::Compress(value.c_str(), value.length(), &compressed);
@@ -375,7 +362,7 @@ int PutData(uint32_t tid, const std::map<uint32_t, std::vector<std::pair<std::st
     }
     const int tid = table_info.tid();
     const uint32_t fmt_ver = table_info.format_version();
-    PutData(tid, dimensions, ts_dimensions, ts, value, table_info.table_partition(), fmt_ver);
+    PutData(tid, dimensions, ts, value, table_info.table_partition(), fmt_ver);
 
     return ::openmldb::base::Status(0, "ok");
 }
@@ -1107,9 +1094,9 @@ void HandleNSClientShowSchema(const std::vector<std::string>& parts, ::openmldb:
         return;
     }
 
-    ::openmldb::cmd::PrintSchema(tables[0].column_desc(), tables[0].added_column_desc());
+    ::openmldb::cmd::PrintSchema(tables[0].column_desc(), tables[0].added_column_desc(), std::cout);
     printf("\n#ColumnKey\n");
-    ::openmldb::cmd::PrintColumnKey(tables[0].column_key());
+    ::openmldb::cmd::PrintColumnKey(tables[0].column_key(), std::cout);
 }
 
 void HandleNSDelete(const std::vector<std::string>& parts, ::openmldb::client::NsClient* client) {
@@ -2340,7 +2327,7 @@ void HandleNSCreateTable(const std::vector<std::string>& parts, ::openmldb::clie
     ns_table_info.set_db(client->GetDb());
     ns_table_info.set_format_version(1);
     std::string msg;
-    if (!client->CreateTable(ns_table_info, msg)) {
+    if (!client->CreateTable(ns_table_info, false, msg)) {
         std::cout << "Fail to create table. error msg: " << msg << std::endl;
         return;
     }
@@ -3474,14 +3461,6 @@ void HandleClientPreview(const std::vector<std::string>& parts, ::openmldb::clie
             } else {
                 value.assign(it->GetValue().data(), it->GetValue().size());
             }
-            if (table_meta.added_column_desc_size() == 0) {
-                ::openmldb::codec::RowCodec::DecodeRow(
-                    columns.size(), ::openmldb::base::Slice(value), &row);
-            } else {
-                ::openmldb::codec::RowCodec::DecodeRow(
-                    columns.size() - table_meta.added_column_desc_size(),
-                    columns.size(), ::openmldb::base::Slice(value), &row);
-            }
         }
         tp.AddRow(row);
         index++;
@@ -3663,9 +3642,9 @@ void HandleClientShowSchema(const std::vector<std::string>& parts, ::openmldb::c
         return;
     }
     if (table_meta.column_desc_size() > 0) {
-        ::openmldb::cmd::PrintSchema(table_meta.column_desc(), table_meta.added_column_desc());
+        ::openmldb::cmd::PrintSchema(table_meta.column_desc(), table_meta.added_column_desc(), std::cout);
         printf("\n#ColumnKey\n");
-        ::openmldb::cmd::PrintColumnKey(table_meta.column_key());
+        ::openmldb::cmd::PrintColumnKey(table_meta.column_key(), std::cout);
     } else {
         std::cout << "No schema for table" << std::endl;
     }
@@ -3787,14 +3766,6 @@ void HandleClientSGet(const std::vector<std::string>& parts, ::openmldb::client:
     row.clear();
     row.push_back("1");
     row.push_back(std::to_string(ts));
-    if (table_meta.added_column_desc_size() == 0) {
-        ::openmldb::codec::RowCodec::DecodeRow(raw.size(),
-                                            ::openmldb::base::Slice(value), &row);
-    } else {
-        ::openmldb::codec::RowCodec::DecodeRow(
-            raw.size() - table_meta.added_column_desc_size(), raw.size(),
-            ::openmldb::base::Slice(value), &row);
-    }
     tp.AddRow(row);
     tp.Print(true);*/
 }

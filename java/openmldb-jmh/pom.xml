@@ -32,12 +32,12 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
         <dependency>
             <groupId>com.4paradigm.openmldb</groupId>
             <artifactId>openmldb-jdbc</artifactId>
-            <version>0.2.3</version>
+            <version>0.4.0</version>
         </dependency>
         <dependency>
             <groupId>com.4paradigm.openmldb</groupId>
             <artifactId>openmldb-native</artifactId>
-            <version>0.2.3</version>
+            <version>0.4.0</version>
         </dependency>
         <dependency>
             <groupId>com.4paradigm.hybridse</groupId>
@@ -83,7 +83,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-core</artifactId>
-            <version>1.2.8</version>
+            <version>1.2.9</version>
         </dependency>
         <dependency>
             <groupId>ch.qos.logback</groupId>

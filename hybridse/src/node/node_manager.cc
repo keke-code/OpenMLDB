@@ -445,6 +445,7 @@ SqlNode *NodeManager::MakeCreateTableNode(bool op_if_not_exist, const std::strin
                                           SqlNodeList *table_option_list) {
     int replica_num = 1;
     int partition_num = 1;
+    StorageMode storage_mode = kMemory;
     SqlNodeList partition_meta_list;
     if (nullptr != table_option_list) {
         for (auto node_ptr : table_option_list->GetList()) {
@@ -456,6 +457,10 @@ SqlNode *NodeManager::MakeCreateTableNode(bool op_if_not_exist, const std::strin
                     }
                     case kPartitionNum: {
                         partition_num = dynamic_cast<PartitionNumNode *>(node_ptr)->GetPartitionNum();
+                        break;
+                    }
+                    case kStorageMode: {
+                        storage_mode = dynamic_cast<StorageModeNode *>(node_ptr)->GetStorageMode();
                         break;
                     }
                     case kDistributions: {
@@ -481,7 +486,8 @@ SqlNode *NodeManager::MakeCreateTableNode(bool op_if_not_exist, const std::strin
             }
         }
     }
-    CreateStmt *node_ptr = new CreateStmt(db_name, table_name, op_if_not_exist, replica_num, partition_num);
+    CreateStmt *node_ptr =
+        new CreateStmt(db_name, table_name, op_if_not_exist, replica_num, partition_num, storage_mode);
     FillSqlNodeList2NodeVector(column_desc_list, node_ptr->GetColumnDefList());
     FillSqlNodeList2NodeVector(&partition_meta_list, node_ptr->GetDistributionList());
     return RegisterNode(node_ptr);
@@ -733,7 +739,7 @@ SqlNode *NodeManager::MakeCmdNode(node::CmdType cmd_type, const std::string &arg
 }
 SqlNode *NodeManager::MakeCmdNode(node::CmdType cmd_type, const std::vector<std::string> &args) {
     CmdNode *node_ptr = new CmdNode(cmd_type);
-    for (auto const & arg: args) {
+    for (auto const & arg : args) {
         node_ptr->AddArg(arg);
     }
     return RegisterNode(node_ptr);
@@ -745,21 +751,24 @@ SqlNode *NodeManager::MakeCmdNode(node::CmdType cmd_type, const std::string &arg
     node_ptr->AddArg(arg2);
     return RegisterNode(node_ptr);
 }
-SqlNode *NodeManager::MakeCreateIndexNode(const std::string &index_name, const std::string &table_name,
+SqlNode *NodeManager::MakeCreateIndexNode(const std::string &index_name,
+                                          const std::string &db_name,
+                                          const std::string &table_name,
                                           ColumnIndexNode *index) {
-    CreateIndexNode *node_ptr = new CreateIndexNode(index_name, table_name, index);
+    CreateIndexNode *node_ptr = new CreateIndexNode(index_name, db_name, table_name, index);
     return RegisterNode(node_ptr);
 }
 
-DeployNode *NodeManager::MakeDeployStmt(const std::string &name, const SqlNode *stmt,
-                                     const std::string& stmt_str, bool if_not_exist) {
-    DeployNode *node = new DeployNode(name, stmt, stmt_str, if_not_exist);
+DeployNode *NodeManager::MakeDeployStmt(const std::string &name, const SqlNode *stmt, const std::string &stmt_str,
+                                        const std::shared_ptr<OptionsMap> options, bool if_not_exist) {
+    DeployNode *node = new DeployNode(name, stmt, stmt_str, std::move(options), if_not_exist);
     return RegisterNode(node);
 }
 
 DeployPlanNode *NodeManager::MakeDeployPlanNode(const std::string &name, const SqlNode *stmt,
-                                                const std::string& stmt_str, bool if_not_exist) {
-    DeployPlanNode *node = new DeployPlanNode(name, stmt, stmt_str, if_not_exist);
+                                                const std::string &stmt_str, const std::shared_ptr<OptionsMap> options,
+                                                bool if_not_exist) {
+    DeployPlanNode *node = new DeployPlanNode(name, stmt, stmt_str, std::move(options), if_not_exist);
     return RegisterNode(node);
 }
 DeleteNode* NodeManager::MakeDeleteNode(DeleteTarget target, std::string_view job_id) {
@@ -781,6 +790,15 @@ LoadDataPlanNode *NodeManager::MakeLoadDataPlanNode(const std::string &file_name
                                                     const std::string &table, const std::shared_ptr<OptionsMap> options,
                                                     const std::shared_ptr<OptionsMap> config_option) {
     LoadDataPlanNode *node = new LoadDataPlanNode(file_name, db, table, options, config_option);
+    return RegisterNode(node);
+}
+
+CreateFunctionPlanNode *NodeManager::MakeCreateFunctionPlanNode(const std::string &function_name,
+                                                               const TypeNode* return_type,
+                                                               const NodePointVector& args_type,
+                                                               bool is_aggregate,
+                                                               std::shared_ptr<OptionsMap> options) {
+    auto node = new CreateFunctionPlanNode(function_name, return_type, args_type, is_aggregate, options);
     return RegisterNode(node);
 }
 
@@ -815,10 +833,10 @@ AllNode *NodeManager::MakeAllNode(const std::string &relation_name, const std::s
     return RegisterNode(new AllNode(relation_name, db_name));
 }
 
-SqlNode *NodeManager::MakeInsertTableNode(const std::string &table_name, const ExprListNode *columns_expr,
-                                          const ExprListNode *values) {
+SqlNode *NodeManager::MakeInsertTableNode(const std::string &db_name, const std::string &table_name,
+                                          const ExprListNode *columns_expr, const ExprListNode *values) {
     if (nullptr == columns_expr) {
-        InsertStmt *node_ptr = new InsertStmt(table_name, values->children_);
+        InsertStmt *node_ptr = new InsertStmt(db_name, table_name, values->children_);
         return RegisterNode(node_ptr);
     } else {
         std::vector<std::string> column_names;
@@ -835,7 +853,7 @@ SqlNode *NodeManager::MakeInsertTableNode(const std::string &table_name, const E
                 }
             }
         }
-        InsertStmt *node_ptr = new InsertStmt(table_name, column_names, values->children_);
+        InsertStmt *node_ptr = new InsertStmt(db_name, table_name, column_names, values->children_);
         return RegisterNode(node_ptr);
     }
 }
@@ -916,10 +934,12 @@ ProjectNode *NodeManager::MakeProjectNode(const int32_t pos, const std::string &
 CreatePlanNode *NodeManager::MakeCreateTablePlanNode(const std::string& db_name,
                                                      const std::string &table_name,
                                                      int replica_num, int partition_num,
+                                                     StorageMode storage_mode,
                                                      const NodePointVector &column_list,
-                                                     const NodePointVector &partition_meta_list) {
-    node::CreatePlanNode *node_ptr =
-        new CreatePlanNode(db_name, table_name, replica_num, partition_num, column_list, partition_meta_list);
+                                                     const NodePointVector &partition_meta_list,
+                                                     const bool if_not_exist) {
+    node::CreatePlanNode *node_ptr = new CreatePlanNode(db_name, table_name, replica_num, partition_num, storage_mode,
+                                                        column_list, partition_meta_list, if_not_exist);
     RegisterNode(node_ptr);
     return node_ptr;
 }
@@ -935,6 +955,8 @@ CreateProcedurePlanNode *NodeManager::MakeCreateProcedurePlanNode(const std::str
 
 CmdPlanNode *NodeManager::MakeCmdPlanNode(const CmdNode *node) {
     node::CmdPlanNode *node_ptr = new CmdPlanNode(node->GetCmdType(), node->GetArgs());
+    node_ptr->SetIfNotExists(node->IsIfNotExists());
+    node_ptr->SetIfExists(node->IsIfExists());
     RegisterNode(node_ptr);
     return node_ptr;
 }
@@ -1019,6 +1041,15 @@ ExternalFnDefNode *NodeManager::MakeExternalFnDefNode(const std::string &functio
                                                     arg_nullable, variadic_pos, return_by_arg));
 }
 
+DynamicUdfFnDefNode *NodeManager::MakeDynamicUdfFnDefNode(const std::string &function_name, void *function_ptr,
+                                                      const node::TypeNode *ret_type, bool ret_nullable,
+                                                      const std::vector<const node::TypeNode *> &arg_types,
+                                                      const std::vector<int> &arg_nullable, bool return_by_arg,
+                                                      ExternalFnDefNode *init_node) {
+    return RegisterNode(new node::DynamicUdfFnDefNode(function_name, function_ptr, ret_type, ret_nullable, arg_types,
+                                                    arg_nullable, return_by_arg, init_node));
+}
+
 node::ExternalFnDefNode *NodeManager::MakeUnresolvedFnDefNode(const std::string &function_name) {
     return RegisterNode(new node::ExternalFnDefNode(function_name, nullptr, nullptr, true, {}, {}, -1, false));
 }
@@ -1056,6 +1087,11 @@ SqlNode *NodeManager::MakeReplicaNumNode(int num) {
     return RegisterNode(node_ptr);
 }
 
+SqlNode *NodeManager::MakeStorageModeNode(StorageMode storage_mode) {
+    SqlNode *node_ptr = new StorageModeNode(storage_mode);
+    return RegisterNode(node_ptr);
+}
+
 SqlNode *NodeManager::MakePartitionNumNode(int num) {
     SqlNode *node_ptr = new PartitionNumNode(num);
     return RegisterNode(node_ptr);
@@ -1072,6 +1108,17 @@ SqlNode *NodeManager::MakeCreateProcedureNode(const std::string &sp_name, SqlNod
     FillSqlNodeList2NodeVector(input_parameter_list, node_ptr->GetInputParameterList());
     std::vector<SqlNode *> &list = node_ptr->GetInnerNodeList();
     list.push_back(inner_node);
+    return RegisterNode(node_ptr);
+}
+
+SqlNode *NodeManager::MakeCreateFunctionNode(const std::string function_name, DataType return_type,
+        const std::vector<DataType>& args_type, bool is_aggregate, std::shared_ptr<OptionsMap> options) {
+    auto return_type_node = MakeTypeNode(return_type);
+    NodePointVector type_node_vec;
+    for (const auto type : args_type) {
+        type_node_vec.push_back(MakeTypeNode(type));
+    }
+    auto node_ptr = new CreateFunctionNode(function_name, return_type_node, type_node_vec, is_aggregate, options);
     return RegisterNode(node_ptr);
 }
 

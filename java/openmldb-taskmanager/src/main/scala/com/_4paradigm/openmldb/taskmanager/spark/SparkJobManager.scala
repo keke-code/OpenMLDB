@@ -16,13 +16,16 @@
 
 package com._4paradigm.openmldb.taskmanager.spark
 
-import com._4paradigm.openmldb.taskmanager.JobInfoManager
+import com._4paradigm.openmldb.taskmanager.{JobInfoManager, LogManager}
 import com._4paradigm.openmldb.taskmanager.config.TaskManagerConfig
 import com._4paradigm.openmldb.taskmanager.dao.JobInfo
 import com._4paradigm.openmldb.taskmanager.yarn.YarnClientUtil
 import org.apache.spark.launcher.SparkLauncher
+import org.slf4j.LoggerFactory
 
 object SparkJobManager {
+
+  private val logger = LoggerFactory.getLogger(this.getClass)
 
   /**
    * Create the SparkLauncher object with pre-set parameters like yarn-cluster.
@@ -41,14 +44,12 @@ object SparkJobManager {
     }
 
     TaskManagerConfig.SPARK_MASTER.toLowerCase match {
-      case "local" => {
+      case "local" =>
         launcher.setMaster("local")
-      }
-      case "yarn" => {
-        launcher.setMaster("yarn")
-          .setDeployMode("cluster")
-          .setConf("spark.yarn.maxAppAttempts", "1")
-      }
+      case "yarn" | "yarn-cluster" =>
+        launcher.setMaster("yarn").setDeployMode("cluster")
+      case "yarn-client" =>
+        launcher.setMaster("yarn").setDeployMode("client")
       case _ => throw new Exception(s"Unsupported Spark master ${TaskManagerConfig.SPARK_MASTER}")
     }
 
@@ -60,8 +61,8 @@ object SparkJobManager {
   }
 
   def submitSparkJob(jobType: String, mainClass: String, args: List[String] = List(),
-                     sparkConf: Map[String, String] = Map(), defaultDb: String = ""): JobInfo = {
-
+                     sparkConf: Map[String, String] = Map(), defaultDb: String = "",
+                     blocking: Boolean = false): JobInfo = {
     val jobInfo = JobInfoManager.createJobInfo(jobType, args, sparkConf)
 
     // Submit Spark application with SparkLauncher
@@ -76,6 +77,25 @@ object SparkJobManager {
     launcher.setConf("spark.yarn.executorEnv.LANG", "en_US.UTF-8")
     launcher.setConf("spark.yarn.executorEnv.LC_ALL", "en_US.UTF-8")
 
+    if (TaskManagerConfig.SPARK_EVENTLOG_DIR.nonEmpty) {
+      launcher.setConf("spark.eventLog.enabled", "true")
+      launcher.setConf("spark.eventLog.dir", TaskManagerConfig.SPARK_EVENTLOG_DIR)
+    }
+
+    if (TaskManagerConfig.SPARK_YARN_MAXAPPATTEMPTS >= 1 ) {
+      launcher.setConf("spark.yarn.maxAppAttempts", TaskManagerConfig.SPARK_YARN_MAXAPPATTEMPTS.toString)
+    }
+
+    // TODO: Support escape delimiter
+    // Set default Spark conf by TaskManager configuration file
+    val defaultSparkConfs = TaskManagerConfig.SPARK_DEFAULT_CONF.split(",")
+    defaultSparkConfs.map(sparkConf => {
+      if (sparkConf.nonEmpty) {
+        val kvList = sparkConf.split("=")
+        launcher.setConf(kvList(0), kvList(1))
+      }
+    })
+
     // Set ZooKeeper config for openmldb-batch jobs
     if (TaskManagerConfig.ZK_CLUSTER.nonEmpty && TaskManagerConfig.ZK_ROOT_PATH.nonEmpty) {
       launcher.setConf("spark.openmldb.zk.cluster", TaskManagerConfig.ZK_CLUSTER)
@@ -89,12 +109,27 @@ object SparkJobManager {
     if (TaskManagerConfig.OFFLINE_DATA_PREFIX.nonEmpty) {
       launcher.setConf("spark.openmldb.offline.data.prefix", TaskManagerConfig.OFFLINE_DATA_PREFIX)
     }
+
     for ((k, v) <- sparkConf) {
+      logger.info("Get Spark config key: " + k + ", value: " + v)
       launcher.setConf(k, v)
     }
 
+    if (TaskManagerConfig.JOB_LOG_PATH.nonEmpty) {
+      // Create local file and redirect the log of job into files
+      launcher.redirectOutput(LogManager.getJobLogFile(jobInfo.getId))
+      launcher.redirectError(LogManager.getJobErrorLogFile(jobInfo.getId))
+    }
+
     // Submit Spark application and watch state with custom listener
-    launcher.startApplication(new SparkJobListener(jobInfo))
+    val sparkAppHandler = launcher.startApplication(new SparkJobListener(jobInfo))
+
+    if (blocking) {
+      while (!sparkAppHandler.getState().isFinal()) {
+        // TODO: Make this configurable
+        Thread.sleep(3000L)
+      }
+    }
 
     jobInfo
   }

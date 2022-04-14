@@ -881,33 +881,46 @@ ParameterExpr *ParameterExpr::ShadowCopy(NodeManager *nm) const {
     return nm->MakeParameterExpr(position());
 }
 ConstNode* ConstNode::ShadowCopy(NodeManager* nm) const {
-    switch (this->GetDataType()) {
-        case node::kBool:
+    switch (GetDataType()) {
+        case DataType::kBool:
             return nm->MakeConstNode(GetBool());
-        case node::kInt16:
+        case DataType::kInt16:
             return nm->MakeConstNode(GetSmallInt());
-        case node::kInt32:
+        case DataType::kInt32:
             return nm->MakeConstNode(GetInt());
-        case node::kInt64:
-            return nm->MakeConstNode(GetLong());
-        case node::kFloat:
+        case DataType::kFloat:
             return nm->MakeConstNode(GetFloat());
-        case node::kDouble:
+        case DataType::kDouble:
             return nm->MakeConstNode(GetDouble());
-        case node::kVarchar:
+        case DataType::kVarchar:
             return nm->MakeConstNode(std::string(GetStr()));
-        case node::kDate:
+
+        case DataType::kInt64:
+        case DataType::kDate:
+        case DataType::kTimestamp:
+        case DataType::kDay:
+        case DataType::kHour:
+        case DataType::kMinute:
+        case DataType::kSecond:
             return nm->MakeConstNode(GetLong(), GetDataType());
-        case node::kTimestamp:
-            return nm->MakeConstNode(GetLong(), GetDataType());
-        case node::kNull:
+        case DataType::kNull:
             return nm->MakeConstNode();
-        default: {
-            LOG(WARNING) << "Fail to copy primary expr of type " +
-                                node::DataTypeName(GetDataType());
-            return nm->MakeConstNode();
+
+        case DataType::kList:
+        case DataType::kIterator:
+        case DataType::kMap:
+        case DataType::kRow:
+        case DataType::kInt8Ptr:
+        case DataType::kTuple:
+        case DataType::kOpaque:
+        case DataType::kPlaceholder:
+        case DataType::kVoid: {
+            LOG(WARNING) << "Fail to copy primary expr of type " << node::DataTypeName(GetDataType());
+            return nm->MakeConstNode(GetDataType());
         }
     }
+    LOG(ERROR) << "Unsupported Data type " << node::DataTypeName(GetDataType());
+    return nullptr;
 }
 
 ColumnRefNode* ColumnRefNode::ShadowCopy(NodeManager* nm) const {
@@ -968,6 +981,22 @@ ExternalFnDefNode* ExternalFnDefNode::DeepCopy(NodeManager* nm) const {
                                          variadic_pos(), return_by_arg());
     } else {
         return nm->MakeUnresolvedFnDefNode(function_name());
+    }
+}
+
+DynamicUdfFnDefNode* DynamicUdfFnDefNode::ShadowCopy(NodeManager* nm) const {
+    return DeepCopy(nm);
+}
+
+DynamicUdfFnDefNode* DynamicUdfFnDefNode::DeepCopy(NodeManager* nm) const {
+    if (IsResolved()) {
+        return nm->MakeDynamicUdfFnDefNode(GetName(), function_ptr(),
+                                         GetReturnType(), IsReturnNullable(),
+                                         arg_types_, arg_nullable_,
+                                         return_by_arg(),
+                                         init_context_node_ == nullptr ? nullptr : init_context_node_->DeepCopy(nm));
+    } else {
+        return nm->MakeDynamicUdfFnDefNode(GetName(), nullptr, nullptr, true, {}, {}, false, nullptr);
     }
 }
 

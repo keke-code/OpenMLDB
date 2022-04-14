@@ -26,18 +26,22 @@ import org.apache.spark.sql.types.{
   ShortType, StringType, StructField, StructType, TimestampType
 }
 import org.apache.spark.sql.{DataFrame, Row}
-
 import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.mutable
-import scala.reflect.{ClassTag, classTag}
 
 
 object HybridseUtil {
-  def getOutputSchemaSlices(node: PhysicalOpNode): Array[StructType] = {
-    (0 until node.GetOutputSchemaSourceSize().toInt).map(i => {
-      val columnDefs = node.GetOutputSchemaSource(i).GetSchema()
-      getSparkSchema(columnDefs)
-    }).toArray
+  def getOutputSchemaSlices(node: PhysicalOpNode, enableUnsafeRowOpt: Boolean): Array[StructType] = {
+    if (enableUnsafeRowOpt) {
+      // If enabling UnsafeRowOpt, return row with one slice
+      val columnDefs = node.GetOutputSchema()
+      Array(getSparkSchema(columnDefs))
+    } else {
+      (0 until node.GetOutputSchemaSourceSize().toInt).map(i => {
+        val columnDefs = node.GetOutputSchemaSource(i).GetSchema()
+        getSparkSchema(columnDefs)
+      }).toArray
+    }
   }
 
   def getDatabases(tableMap: mutable.Map[String, mutable.Map[String, DataFrame]]): List[Database] = {
@@ -61,7 +65,7 @@ object HybridseUtil {
       tblBulder.addColumns(ColumnDef.newBuilder()
         .setName(field.name)
         .setIsNotNull(!field.nullable)
-        .setType(getHybridseType(field.dataType))
+        .setType(DataTypeUtil.sparkTypeToHybridseProtoType(field.dataType))
         .build()
       )
     })
@@ -75,79 +79,15 @@ object HybridseUtil {
       list.add(ColumnDef.newBuilder()
         .setName(field.name)
         .setIsNotNull(!field.nullable)
-        .setType(getHybridseType(field.dataType)).build())
+        .setType(DataTypeUtil.sparkTypeToHybridseProtoType(field.dataType)).build())
     })
     list
   }
 
   def getSparkSchema(columns: java.util.List[ColumnDef]): StructType = {
     StructType(columns.asScala.map(col => {
-      StructField(col.getName, getSparkType(col.getType), !col.getIsNotNull)
+      StructField(col.getName, DataTypeUtil.hybridseProtoTypeToSparkType(col.getType), !col.getIsNotNull)
     }))
-  }
-
-  def getSparkType(dtype: Type): DataType = {
-    dtype match {
-      case Type.kInt16 => ShortType
-      case Type.kInt32 => IntegerType
-      case Type.kInt64 => LongType
-      case Type.kFloat => FloatType
-      case Type.kDouble => DoubleType
-      case Type.kBool => BooleanType
-      case Type.kVarchar => StringType
-      case Type.kDate => DateType
-      case Type.kTimestamp => TimestampType
-      case _ => throw new IllegalArgumentException(
-        s"HybridSE type $dtype not supported")
-    }
-  }
-
-  def getHybridseType(dtype: DataType): Type = {
-    dtype match {
-      case ShortType => Type.kInt16
-      case IntegerType => Type.kInt32
-      case LongType => Type.kInt64
-      case FloatType => Type.kFloat
-      case DoubleType => Type.kDouble
-      case BooleanType => Type.kBool
-      case StringType => Type.kVarchar
-      case DateType => Type.kDate
-      case TimestampType => Type.kTimestamp
-      case _ => throw new IllegalArgumentException(
-        s"Spark type $dtype not supported")
-    }
-  }
-
-  def getSchemaTypeFromInnerType(dtype: InnerDataType): Type = {
-    dtype match {
-      case InnerDataType.kInt16 => Type.kInt16
-      case InnerDataType.kInt32 => Type.kInt32
-      case InnerDataType.kInt64 => Type.kInt64
-      case InnerDataType.kFloat => Type.kFloat
-      case InnerDataType.kDouble => Type.kDouble
-      case InnerDataType.kBool => Type.kBool
-      case InnerDataType.kVarchar => Type.kVarchar
-      case InnerDataType.kDate => Type.kDate
-      case InnerDataType.kTimestamp => Type.kTimestamp
-      case _ => throw new IllegalArgumentException(
-        s"Inner type $dtype not supported")
-    }
-  }
-
-  def getInnerTypeFromSchemaType(dtype: Type): InnerDataType = {
-    dtype match {
-      case Type.kInt16 => InnerDataType.kInt16
-      case Type.kInt32 => InnerDataType.kInt32
-      case Type.kInt64 => InnerDataType.kInt64
-      case Type.kFloat => InnerDataType.kFloat
-      case Type.kDouble => InnerDataType.kDouble
-      case Type.kBool => InnerDataType.kBool
-      case Type.kVarchar => InnerDataType.kVarchar
-      case Type.kDate => InnerDataType.kDate
-      case Type.kTimestamp => InnerDataType.kTimestamp
-      case _ => throw new IllegalArgumentException(
-        s"Schema type $dtype not supported")
-    }
   }
 
   def createGroupKeyComparator(keyIdxs: Array[Int]): (Row, Row) => Boolean = {

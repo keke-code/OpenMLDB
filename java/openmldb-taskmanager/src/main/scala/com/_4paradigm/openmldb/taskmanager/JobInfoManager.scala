@@ -38,13 +38,14 @@ object JobInfoManager {
   private val logger = LoggerFactory.getLogger(this.getClass)
 
   // TODO: Check if internal table has been created
-  val dbName = "__INTERNAL_DB"
-  val tableName = "JOB_INFO"
+  private val INTERNAL_DB_NAME = "__INTERNAL_DB"
+  private val JOB_INFO_TABLE_NAME = "JOB_INFO"
 
-  val option = new SdkOption
+  private val option = new SdkOption
   option.setZkCluster(TaskManagerConfig.ZK_CLUSTER)
   option.setZkPath(TaskManagerConfig.ZK_ROOT_PATH)
   val sqlExecutor = new SqlClusterExecutor(option)
+  sqlExecutor.executeSQL("", "set @@execute_mode='online';")
 
   def createJobInfo(jobType: String, args: List[String] = List(), sparkConf: Map[String, String] = Map()): JobInfo = {
     val jobId = JobIdGenerator.getUniqueId
@@ -52,11 +53,9 @@ object JobInfoManager {
     val initialState = "Submitted"
     val parameter = if (args != null && args.length>0) args.mkString(",") else ""
     val cluster = sparkConf.getOrElse("spark.master", TaskManagerConfig.SPARK_MASTER)
-    // TODO: Require endTime is not null for insert sql
-    val defaultEndTime = startTime
 
     // TODO: Parse if run in yarn or local
-    val jobInfo = new JobInfo(jobId, jobType, initialState, startTime, defaultEndTime, parameter, cluster, "", "")
+    val jobInfo = new JobInfo(jobId, jobType, initialState, startTime, null, parameter, cluster, "", "")
     jobInfo.sync()
     jobInfo
   }
@@ -67,16 +66,17 @@ object JobInfoManager {
   }
 
   def getAllJobs(): List[JobInfo] = {
-    val sql = s"SELECT * FROM $tableName"
-    val rs = sqlExecutor.executeSQL(dbName, sql)
-    resultSetToJobs(rs)
+    val sql = s"SELECT * FROM $JOB_INFO_TABLE_NAME"
+    val rs = sqlExecutor.executeSQL(INTERNAL_DB_NAME, sql)
+    // TODO: Reorder in output, use orderby desc if SQL supported
+    resultSetToJobs(rs).sortWith(_.getId > _.getId)
   }
 
   def getUnfinishedJobs(): List[JobInfo] = {
     // TODO: Now we can not add index for `state` and run sql with
     //  s"SELECT * FROM $tableName WHERE state NOT IN (${JobInfo.FINAL_STATE.mkString(",")})"
-    val sql = s"SELECT * FROM $tableName"
-    val rs = sqlExecutor.executeSQL(dbName, sql)
+    val sql = s"SELECT * FROM $JOB_INFO_TABLE_NAME"
+    val rs = sqlExecutor.executeSQL(INTERNAL_DB_NAME, sql)
 
     val jobs = mutable.ArrayBuffer[JobInfo]()
     while(rs.next()) {
@@ -88,12 +88,12 @@ object JobInfoManager {
       }
     }
 
-    jobs.toList
+    jobs.toList.sortWith(_.getId > _.getId)
   }
 
   def stopJob(jobId: Int): JobInfo = {
-    val sql = s"SELECT * FROM $tableName WHERE id = $jobId"
-    val rs = sqlExecutor.executeSQL(dbName, sql)
+    val sql = s"SELECT * FROM $JOB_INFO_TABLE_NAME WHERE id = $jobId"
+    val rs = sqlExecutor.executeSQL(INTERNAL_DB_NAME, sql)
 
     val jobInfo = if (rs.getFetchSize == 0) {
       throw new Exception("Job does not exist for id: " + jobId)
@@ -119,12 +119,13 @@ object JobInfoManager {
 
   def deleteJob(jobId: Int): Unit = {
     // TODO: Can not support deleting single row row
+    throw new Exception("Delete job is not supported yet")
   }
 
   def getJob(jobId: Int): Option[JobInfo] = {
     // TODO: Require to get only one row, https://github.com/4paradigm/OpenMLDB/issues/704
-    val sql = s"SELECT * FROM $tableName WHERE id = $jobId"
-    val rs = sqlExecutor.executeSQL(dbName, sql)
+    val sql = s"SELECT * FROM $JOB_INFO_TABLE_NAME WHERE id = $jobId"
+    val rs = sqlExecutor.executeSQL(INTERNAL_DB_NAME, sql)
 
     if (rs.getFetchSize == 0) {
       None
@@ -136,8 +137,8 @@ object JobInfoManager {
   }
 
   def syncJob(job: JobInfo): Unit = {
-    val insertSql = s"INSERT INTO $tableName VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    val statement = sqlExecutor.getInsertPreparedStmt(dbName, insertSql)
+    val insertSql = s"INSERT INTO $JOB_INFO_TABLE_NAME VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    val statement = sqlExecutor.getInsertPreparedStmt(INTERNAL_DB_NAME, insertSql)
     statement.setInt(1, job.getId)
     statement.setString(2, job.getJobType)
     statement.setString(3, job.getState)
@@ -151,7 +152,7 @@ object JobInfoManager {
     var pstmt: PreparedStatement = null
     try {
       logger.info(s"Run insert SQL with job info: $job")
-      pstmt = sqlExecutor.getInsertPreparedStmt(dbName, insertSql)
+      pstmt = sqlExecutor.getInsertPreparedStmt(INTERNAL_DB_NAME, insertSql)
 
       val ok = statement.execute()
       if (!ok) {
@@ -192,10 +193,10 @@ object JobInfoManager {
   }
 
   def dropOfflineTable(db: String, table: String): Unit = {
-    val tableInfo = sqlExecutor.getTableInfo(db, table)
-
     // Refresh catalog to get the latest table info
     sqlExecutor.refreshCatalog()
+    val tableInfo = sqlExecutor.getTableInfo(db, table)
+
     if (tableInfo.hasOfflineTableInfo) {
       val offlineTableInfo = tableInfo.getOfflineTableInfo
 
@@ -212,7 +213,7 @@ object JobInfoManager {
           // TODO: Get namenode uri from config file
           val namenodeUri = TaskManagerConfig.NAMENODE_URI
           val hdfs = FileSystem.get(URI.create(s"hdfs://$namenodeUri"), conf)
-          hdfs.delete(new Path(filePath.substring(7)), true)
+          hdfs.delete(new Path(filePath), true)
 
         } else {
           throw new Exception(s"Get unsupported file path: $filePath")

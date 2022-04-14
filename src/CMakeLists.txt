@@ -14,9 +14,11 @@
 
 include_directories(${INCLUDE_DIRECTORIES} ${PROJECT_SOURCE_DIR}/src)
 
+add_subdirectory(statistics)
+
 function(compile_proto proto_name project_dir)
 add_custom_command(OUTPUT ${project_dir}/src/proto/${proto_name}.pb.cc
-        COMMAND ${CMAKE_PREFIX_PATH}/bin/protoc -I ${PROJECT_SOURCE_DIR}/src/proto
+        COMMAND ${Protobuf_PROTOC_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/src/proto
         --cpp_out=${project_dir}/src/proto/
         --java_out=${project_dir}/java/openmldb-native/src/main/java
         --java_out=${project_dir}/java/openmldb-import/src/main/java
@@ -41,25 +43,30 @@ function(compile_lib LIB_NAME DIR DEPEND_FILE_LIST)
 endfunction(compile_lib)
 
 function(compile_test DIR)
-    set(TEST_LIBS apiserver nameserver tablet openmldb_sdk openmldb_catalog schema client zk_client replica base storage openmldb_codec openmldb_proto log common zookeeper_mt tcmalloc_minimal
+    set(TEST_LIBS apiserver nameserver tablet query_response_time openmldb_sdk openmldb_catalog schema client zk_client replica base storage openmldb_codec openmldb_proto log common zookeeper_mt tcmalloc_minimal gflags ${RocksDB_LIB}
     ${VM_LIBS}
     ${LLVM_LIBS}
     ${ZETASQL_LIBS}
     ${BRPC_LIBS})
     file(GLOB_RECURSE SRC_FILES ${DIR}/*.cc)
-    set(TEST_CPP_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
     foreach(SRC_FILE ${SRC_FILES})
         if (SRC_FILE MATCHES ".*_test.cc")
-            file(RELATIVE_PATH RELATIVE_TEST_PATH ${TEST_CPP_SOURCE_DIR} ${SRC_FILE})
+            file(RELATIVE_PATH RELATIVE_TEST_PATH ${CMAKE_CURRENT_SOURCE_DIR} ${SRC_FILE})
             get_filename_component(TEST_TARGET_DIR ${RELATIVE_TEST_PATH} DIRECTORY)
             get_filename_component(TEST_TARGET_NAME ${RELATIVE_TEST_PATH} NAME_WE)
             add_executable(${TEST_TARGET_NAME} ${SRC_FILE} $<TARGET_OBJECTS:openmldb_proto>)
             list(APPEND test_list ${TEST_TARGET_NAME})
             if (${TEST_TARGET_NAME} STREQUAL "tablet_impl_mem_test")
-                target_link_libraries(${TEST_TARGET_NAME} tcmalloc ${TEST_LIBS} gtest)
+                target_link_libraries(${TEST_TARGET_NAME} tcmalloc ${TEST_LIBS} ${GTEST_LIBRARIES})
             else()
-                target_link_libraries(${TEST_TARGET_NAME} ${TEST_LIBS} gtest)
+                target_link_libraries(${TEST_TARGET_NAME} ${TEST_LIBS} ${GTEST_LIBRARIES})
             endif()
+            set_target_properties(${TEST_TARGET_NAME}
+                PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/${TEST_TARGET_DIR})
+            add_test(${TEST_TARGET_NAME}
+                ${CMAKE_CURRENT_BINARY_DIR}/${TEST_TARGET_DIR}/${TEST_TARGET_NAME}
+                --gtest_output=xml:${CMAKE_CURRENT_BINARY_DIR}/${TEST_TARGET_DIR}/${TEST_TARGET_NAME}.xml)
         endif()
     endforeach()
     set(test_list ${test_list} PARENT_SCOPE)
@@ -92,7 +99,7 @@ add_library(openmldb_proto STATIC proto/type.pb.cc proto/common.pb.cc proto/tabl
 
 add_library(openmldb_flags flags.cc)
 
-set(BIN_LIBS apiserver nameserver tablet openmldb_sdk openmldb_catalog client zk_client replica base storage openmldb_codec schema openmldb_proto log common zookeeper_mt tcmalloc_minimal
+set(BIN_LIBS apiserver nameserver tablet query_response_time openmldb_sdk openmldb_catalog client zk_client replica base storage openmldb_codec schema openmldb_proto log common zookeeper_mt tcmalloc_minimal ${RocksDB_LIB}
 ${VM_LIBS}
 ${LLVM_LIBS}
 ${ZETASQL_LIBS}
@@ -111,11 +118,12 @@ if(TESTING_ENABLE)
     compile_test(schema)
     compile_test(log)
     compile_test(apiserver)
+    add_library(test_udf SHARED examples/test_udf.cc)
 endif()
 
 add_executable(parse_log tools/parse_log.cc  $<TARGET_OBJECTS:openmldb_proto>)
 
-set(LINK_LIBS log openmldb_proto base protobuf glog gflags ssl crypto z snappy dl pthread)
+set(LINK_LIBS log openmldb_proto base ${PROTOBUF_LIBRARY} ${GLOG_LIBRARY} ${GFLAGS_LIBRARY} ${OPENSSL_LIBRARIES} ${Z_LIBRARY} ${SNAPPY_LIBRARY} dl pthread)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND LINK_LIBS unwind)
 endif()

@@ -308,7 +308,7 @@ TEST_F(SqlNodeTest, MakeInsertNodeTest) {
     value_expr_list->PushBack(value4);
     ExprListNode *insert_values = node_manager_->MakeExprList();
     insert_values->PushBack(value_expr_list);
-    SqlNode *node_ptr = node_manager_->MakeInsertTableNode("t1", column_expr_list, insert_values);
+    SqlNode *node_ptr = node_manager_->MakeInsertTableNode("", "t1", column_expr_list, insert_values);
 
     ASSERT_EQ(kInsertStmt, node_ptr->GetType());
     InsertStmt *insert_stmt = dynamic_cast<InsertStmt *>(node_ptr);
@@ -669,13 +669,14 @@ TEST_F(SqlNodeTest, CreateIndexNodeTest) {
     index_items->PushBack(node_manager_->MakeIndexTsNode("col5"));
     ColumnIndexNode *index_node = dynamic_cast<ColumnIndexNode *>(node_manager_->MakeColumnIndexNode(index_items));
     CreatePlanNode *node = node_manager_->MakeCreateTablePlanNode(
-        "", "t1", 3, 8,
+        "", "t1", 3, 8, kMemory,
         {node_manager_->MakeColumnDescNode("col1", node::kInt32, true),
          node_manager_->MakeColumnDescNode("col2", node::kInt32, true),
          node_manager_->MakeColumnDescNode("col3", node::kFloat, true),
          node_manager_->MakeColumnDescNode("col4", node::kVarchar, true),
          node_manager_->MakeColumnDescNode("col5", node::kTimestamp, true), index_node},
-        {});
+        {},
+        false);
     ASSERT_TRUE(nullptr != node);
     std::vector<std::string> columns;
     std::vector<std::string> indexes;
@@ -685,7 +686,7 @@ TEST_F(SqlNodeTest, CreateIndexNodeTest) {
     ASSERT_EQ(std::vector<std::string>({"index1:col4:col5"}), indexes);
 
     CreateIndexNode *create_index_node =
-        dynamic_cast<node::CreateIndexNode *>(node_manager_->MakeCreateIndexNode("index1", "t1", index_node));
+        dynamic_cast<node::CreateIndexNode *>(node_manager_->MakeCreateIndexNode("index1", "", "t1", index_node));
 
     ASSERT_TRUE(nullptr != create_index_node);
     std::ostringstream oss;
